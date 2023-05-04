@@ -34,7 +34,7 @@ def all_fsm_fields_data(model):
 
 def node_name(field, state):
     opts = field.model._meta
-    return "%s.%s.%s.%s" % (opts.app_label, opts.verbose_name.replace(" ", "_"), field.name, state)
+    return f'{opts.app_label}.{opts.verbose_name.replace(" ", "_")}.{field.name}.{state}'
 
 
 def node_label(field, state):
@@ -58,7 +58,7 @@ def generate_dot(fields_data):
                 any_except_targets.add((transition.target, transition.name))
             else:
                 _targets = (
-                    (state for state in transition.target.allowed_states)
+                    iter(transition.target.allowed_states)
                     if isinstance(transition.target, (GET_STATE, RETURN_VALUE))
                     else (transition.target,)
                 )
@@ -76,7 +76,10 @@ def generate_dot(fields_data):
                         add_transition(source, target, transition.name, source_name, field, sources, targets, edges)
 
         targets.update(
-            set((node_name(field, target), node_label(field, target)) for target, _ in chain(any_targets, any_except_targets))
+            {
+                (node_name(field, target), node_label(field, target))
+                for target, _ in chain(any_targets, any_except_targets)
+            }
         )
         for target, name in any_targets:
             target_name = node_name(field, target)
@@ -96,8 +99,10 @@ def generate_dot(fields_data):
         # construct subgraph
         opts = field.model._meta
         subgraph = graphviz.Digraph(
-            name="cluster_%s_%s_%s" % (opts.app_label, opts.object_name, field.name),
-            graph_attr={"label": "%s.%s.%s" % (opts.app_label, opts.object_name, field.name)},
+            name=f"cluster_{opts.app_label}_{opts.object_name}_{field.name}",
+            graph_attr={
+                "label": f"{opts.app_label}.{opts.object_name}.{field.name}"
+            },
         )
 
         final_states = targets - sources
@@ -105,11 +110,10 @@ def generate_dot(fields_data):
             subgraph.node(name, label=label, shape="doublecircle")
         for name, label in (sources | targets) - final_states:
             subgraph.node(name, label=label, shape="circle")
-            if field.default:  # Adding initial state notation
-                if label == field.default:
-                    initial_name = node_name(field, "_initial")
-                    subgraph.node(name=initial_name, label="", shape="point")
-                    subgraph.edge(initial_name, name)
+            if field.default and label == field.default:
+                initial_name = node_name(field, "_initial")
+                subgraph.node(name=initial_name, label="", shape="point")
+                subgraph.edge(initial_name, name)
         for source_name, target_name, attrs in edges:
             subgraph.edge(source_name, target_name, **dict(attrs))
 
@@ -177,7 +181,7 @@ class Command(BaseCommand):
                 action="store",
                 dest="layout",
                 default="dot",
-                help=("Layout to be used by GraphViz for visualization. " "Layouts: %s." % " ".join(get_graphviz_layouts())),
+                help=f'Layout to be used by GraphViz for visualization. Layouts: {" ".join(get_graphviz_layouts())}.',
             )
             parser.add_argument("args", nargs="*", help=("[appname[.model[.field]]]"))
 
@@ -192,7 +196,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         fields_data = []
-        if len(args) != 0:
+        if args:
             for arg in args:
                 field_spec = arg.split(".")
 
@@ -205,26 +209,20 @@ class Command(BaseCommand):
                         models = get_models(app)
                     for model in models:
                         fields_data += all_fsm_fields_data(model)
-                elif len(field_spec) == 2:
-                    if NEW_META_API:
-                        model = apps.get_model(field_spec[0], field_spec[1])
-                    else:
-                        model = get_model(field_spec[0], field_spec[1])
+                elif len(field_spec) in {2, 3}:
+                    model = (
+                        apps.get_model(field_spec[0], field_spec[1])
+                        if NEW_META_API
+                        else get_model(field_spec[0], field_spec[1])
+                    )
                     fields_data += all_fsm_fields_data(model)
-                elif len(field_spec) == 3:
-                    if NEW_META_API:
-                        model = apps.get_model(field_spec[0], field_spec[1])
-                    else:
-                        model = get_model(field_spec[0], field_spec[1])
-                    fields_data += all_fsm_fields_data(model)
+        elif NEW_META_API:
+            for model in apps.get_models():
+                fields_data += all_fsm_fields_data(model)
         else:
-            if NEW_META_API:
-                for model in apps.get_models():
+            for app in get_apps():
+                for model in get_models(app):
                     fields_data += all_fsm_fields_data(model)
-            else:
-                for app in get_apps():
-                    for model in get_models(app):
-                        fields_data += all_fsm_fields_data(model)
 
         dotdata = generate_dot(fields_data)
 
